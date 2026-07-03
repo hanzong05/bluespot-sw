@@ -65,7 +65,7 @@ export default {
     }
 
     try {
-      const { uid, idToken } = await request.json();
+      const { uid, idToken, action, newPassword } = await request.json();
       if (!uid || !idToken) {
         return json({ error: 'Missing uid or idToken' }, 400, corsHeaders);
       }
@@ -74,9 +74,6 @@ export default {
       const callerUid = await verifyFirebaseIdToken(idToken, env.FIREBASE_PROJECT_ID);
       if (!callerUid) {
         return json({ error: 'Invalid or expired session. Please sign in again.' }, 401, corsHeaders);
-      }
-      if (callerUid === uid) {
-        return json({ error: "You can't delete your own account this way." }, 400, corsHeaders);
       }
 
       // 2. Get a Google access token for the service account.
@@ -87,7 +84,21 @@ export default {
       const callerProfile = await dbGet(env.DATABASE_URL, `users/${callerUid}`, accessToken);
       const isSuperAdmin = !callerProfile || callerProfile.role === 'super';
       if (!isSuperAdmin) {
-        return json({ error: 'Only Super Admins can delete users.' }, 403, corsHeaders);
+        return json({ error: 'Only Super Admins can manage users.' }, 403, corsHeaders);
+      }
+
+      // ── Change password action ──
+      if (action === 'updatePassword') {
+        if (!newPassword || newPassword.length < 6) {
+          return json({ error: 'Password must be at least 6 characters.' }, 400, corsHeaders);
+        }
+        await updateAuthUserPassword(env.FIREBASE_PROJECT_ID, uid, newPassword, accessToken);
+        return json({ success: true }, 200, corsHeaders);
+      }
+
+      // ── Default action: delete user ──
+      if (callerUid === uid) {
+        return json({ error: "You can't delete your own account this way." }, 400, corsHeaders);
       }
 
       // 4. Delete the DB profile.
@@ -220,6 +231,22 @@ async function deleteAuthUser(projectId, uid, accessToken) {
     if (!message.includes('USER_NOT_FOUND')) {
       throw new Error('Failed to delete Auth user: ' + message);
     }
+  }
+}
+
+// ── Identity Toolkit REST: set a new password for an Auth user ──
+async function updateAuthUserPassword(projectId, uid, newPassword, accessToken) {
+  const res = await fetch('https://identitytoolkit.googleapis.com/v1/projects/' + projectId + '/accounts:update', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ localId: uid, password: newPassword }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error('Failed to update password: ' + (body?.error?.message || res.status));
   }
 }
 
